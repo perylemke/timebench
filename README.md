@@ -6,10 +6,20 @@ A small CLI to generate statistics of TimescaleDB.
 
 - Go
 - Docker
+- Docker Compose
 
 # Install
 
-Work in progress.
+```
+# Clone this repo
+$ git clone https://github.com/perylemke/timebench.git
+
+# Running make command to up database
+$ make up
+
+# Running make command to run migrations
+$ make migrate
+```
 
 # Using
 
