@@ -48,7 +48,7 @@ var startCmd = &cobra.Command{
 		}
 
 		var wg sync.WaitGroup
-		maxGoroutines := 3
+		maxGoroutines := 10
 		guard := make(chan struct{}, maxGoroutines)
 
 		for {
