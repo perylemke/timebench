@@ -16,7 +16,8 @@ down:
 
 clean:
 	@docker-compose down
-	@docker volume prune -f
+	@docker volume rm timebench_data
+	@rm -fv bin/*
 
 # Database commands
 migrate:

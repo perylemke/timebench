@@ -7,7 +7,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/spf13/cobra"
@@ -21,7 +23,7 @@ var startCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// Connect to DB
 		ctx := context.Background()
-		connStr := "postgres://postgres:password@localhost:5432/homework"
+		connStr := os.Getenv("DB_CONN_URI")
 		dbpool, err := pgxpool.Connect(ctx, connStr)
 		if err != nil {
 			log.Fatalf("Unable to connect to database: %v\n", err)
@@ -30,6 +32,12 @@ var startCmd = &cobra.Command{
 
 		// Receive the csv file
 		fileName, _ := cmd.Flags().GetString("file")
+
+		// Check if file is valid
+		fExt := filepath.Ext(fileName)
+		if fExt != ".csv" {
+			log.Fatalf("Invalid file extension: %v\n", fExt)
+		}
 
 		// Open file
 		f, err := os.Open(fileName)
@@ -51,6 +59,8 @@ var startCmd = &cobra.Command{
 		maxGoroutines := 10
 		guard := make(chan struct{}, maxGoroutines)
 
+		// Execute queries on Database
+		fmt.Println("Starting queries on DB. Awaiting...")
 		for {
 			record, err := r.Read()
 			if err != nil {
@@ -71,13 +81,21 @@ var startCmd = &cobra.Command{
 				}
 				defer conn.Release()
 
-				queryCPUUsage := fmt.Sprintf(`
-				SELECT time_bucket('1 min', ts) as time,  max(usage) as max_usage, min(usage) as min_usage 
-				FROM cpu_usage
-				WHERE host = '%s' AND ts BETWEEN '%s'::timestamp AND '%s'::timestamp 
-				GROUP BY time;`, hostname, startTime, endTime)
+				queryCpuUsage := fmt.Sprintf(`
+				SELECT 
+					time_bucket('1 min', ts) as time,  
+					max(usage) as max_usage, 
+					min(usage) as min_usage 
+				FROM 
+					cpu_usage
+				WHERE 
+					host = '%s' AND 
+					ts BETWEEN '%s'::timestamp AND 
+					'%s'::timestamp 
+				GROUP BY 
+					time;`, hostname, startTime, endTime)
 
-				_, err = conn.Query(ctx, queryCPUUsage)
+				_, err = conn.Query(ctx, queryCpuUsage)
 				if err != nil {
 					log.Fatalf("Unable to execute query %v\n", err)
 				}
@@ -85,6 +103,76 @@ var startCmd = &cobra.Command{
 			}(record[0], record[1], record[2])
 		}
 		wg.Wait()
+
+		fmt.Println("Show the statistics...")
+
+		// Run query to show in terminal
+		conn, err := dbpool.Acquire(ctx)
+		if err != nil {
+			log.Fatalf("Unable to acquire connection: %v\n", err)
+		}
+		defer conn.Release()
+
+		const queryStmts = `
+		SELECT 
+    		query, 
+    		calls, 
+    		( total_exec_time / 1000 ) as total,
+    		( min_exec_time / 1000) as min_time,
+    		( max_exec_time / 1000) as max_time,
+    		( mean_exec_time / 1000 ) as avg_time,
+    		(((min_exec_time/1000) + (max_exec_time/1000)) / 2) as median
+		FROM
+    		pg_stat_statements
+		WHERE
+    		query ilike '%cpu_usage%';
+		`
+		rows, err := conn.Query(ctx, queryStmts)
+		if err != nil {
+			log.Fatalf("Unable to acquire connection: %v\n", err)
+		}
+		defer rows.Close()
+
+		type queryResult struct {
+			Query   string
+			Calls   int
+			Total   float64
+			minTime float64
+			avgTime float64
+			maxTime float64
+			median  float64
+		}
+
+		var queryResults []queryResult
+		for rows.Next() {
+			var qr queryResult
+			err = rows.Scan(&qr.Query, &qr.Calls, &qr.Total, &qr.minTime, &qr.avgTime, &qr.maxTime, &qr.median)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Unable to scan %v\n", err)
+				os.Exit(1)
+			}
+			queryResults = append(queryResults, qr)
+			fmt.Printf("Query: %v\n", qr.Query)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Calls: %v\n", qr.Calls)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Total time (Seconds): %v\n", qr.Total)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Minimum Time (Seconds): %v\n", qr.minTime)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Maximum Time (Seconds): %v\n", qr.maxTime)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Average Time (Seconds): %v\n", qr.avgTime)
+			time.Sleep(1 * time.Second)
+			fmt.Printf("Median Time (Seconds): %v\n", qr.median)
+			time.Sleep(1 * time.Second)
+		}
+
+		if rows.Err() != nil {
+			fmt.Fprintf(os.Stderr, "rows Error: %v\n", rows.Err())
+			os.Exit(1)
+		}
+
 	},
 }
 
