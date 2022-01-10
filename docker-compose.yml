@@ -3,17 +3,12 @@ services:
   db:
     container_name: timescaledb
     image: timescale/timescaledb:latest-pg14
-    networks:
-      - timebenchnw
+    network_mode: host
+    command: postgres -c shared_preload_libraries=pg_stat_statements,timescaledb -c pg_stat_statements.track=all -c max_connections=3000 -c track_activity_query_size=2048
     environment:
       POSTGRES_PASSWORD: password
-    ports:
-      - "5432:5432"
     volumes:
       - data:/var/lib/postgresql/data
-
-networks:
-  timebenchnw:
 
 volumes:
   data:
