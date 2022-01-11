@@ -2,13 +2,23 @@
 
 A small CLI to generate statistics of TimescaleDB.
 
-# Tools
+# Considerations
 
-- Go
-- Docker
-- Docker Compose
+First, It's a very fun challenge, because Go it's not my principal language, but I can developing without problems.
 
-# Install
+In a first moment, I choose collect the metrics in a `pg_stat_statements`, but in talk with Sam It's better taking the metrics on application and is more easy too.
+
+I presume to run this test it's necessary to install Go, Docker and Docker Compose, above links to install:
+
+- [Go](https://go.dev/doc/install)
+- [Docker](https://docs.docker.com/engine/install/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+
+This CLI has some improvements, like refactor in a new functions and implement unit tests too.
+
+And have a bug, where the CLI don't execute all queries sometimes.
+
+# Install the CLI
 
 ```
 # Clone this repo
@@ -33,14 +43,21 @@ $ export DB_CONN_URI='postgres://postgres:password@localhost:5432/homework'
 # Call CLI and pass a CSV file to a parameter
 $ ./bin/timebench start --file /path/to/you/file.csv
 Starting queries on DB. Awaiting...
-Show the statistics...
-Query: SELECT time_bucket($1, ts) as time,  max(usage) as max_usage, min(usage) as min_usage 
-				FROM cpu_usage
-				WHERE host = $2 AND ts BETWEEN $3::timestamp AND $4::timestamp 
-				GROUP BY time
-Calls: 200
-Total time (seconds): 0.4794795470000003
-Minimum Time (seconds): 0.001171763
-Average Time (seconds): 0.0023973977349999987
-Maximum Time (Seconds): 0.004390066
+Nice. All queries executed...
+
+Now, show the statistics...
+
+Total queries: 2000
+Total time (Seconds): 32.37942078900004
+Minimum time (Seconds): 0.010760386
+Maximum time (Seconds): 0.032483573
+Mean time (Seconds): 0.01618971039450002
+Median time (Seconds): 0.015804742
+```
+
+# Clean installation
+```
+# Running make commands to clean
+$ make down
+$ make clean
 ```

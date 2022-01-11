@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -15,165 +16,150 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func runBenchmarking(cmd *cobra.Command, args []string) {
+	// Connect to DB
+	ctx := context.Background()
+	connStr := os.Getenv("DB_CONN_URI")
+	dbpool, err := pgxpool.Connect(ctx, connStr)
+	if err != nil {
+		log.Fatalf("Unable to connect to database: %v\n", err)
+	}
+	defer dbpool.Close()
+
+	// Receive the csv file
+	fileName, _ := cmd.Flags().GetString("file")
+
+	// Open file
+	f, err := os.Open(fileName)
+	if err != nil {
+		log.Fatalf("Unable to open file: %v\n", err)
+	}
+
+	// Check if file is valid
+	fExt := filepath.Ext(fileName)
+	if fExt != ".csv" {
+		log.Fatalf("Invalid file extension: %v\n", fExt)
+	}
+
+	// Close file
+	defer f.Close()
+
+	r := csv.NewReader(f)
+
+	// Skip first line
+	if _, err := r.Read(); err != nil {
+		log.Fatalf("Unable to read file: %v\n", err)
+	}
+
+	var wg sync.WaitGroup
+	maxGoroutines := 10
+	guard := make(chan struct{}, maxGoroutines)
+
+	// Execute queries on Database
+	fmt.Println("Starting queries on DB. Awaiting...")
+	var times []float64
+	count := 0
+	for {
+		// Load line by line on the memory.
+		// It's better to not overloading the hardware.
+		record, err := r.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Fatal(err)
+		}
+
+		wg.Add(1)
+		guard <- struct{}{}
+		go func(hostname, startTime, endTime string) {
+			defer wg.Done()
+
+			conn, err := dbpool.Acquire(ctx)
+			if err != nil {
+				log.Fatalf("Unable to acquire connection: %v\n", err)
+			}
+			defer conn.Release()
+
+			queryCpuUsage := fmt.Sprintf(`
+			SELECT 
+				time_bucket('1 min', ts) as time,  
+				max(usage) as max_usage, 
+				min(usage) as min_usage 
+			FROM 
+				cpu_usage
+			WHERE 
+				host = '%s' AND 
+				ts BETWEEN '%s'::timestamp AND 
+				'%s'::timestamp 
+			GROUP BY 
+				time;`, hostname, startTime, endTime)
+
+			tStart := time.Now()
+			_, err = conn.Query(ctx, queryCpuUsage)
+			tFinish := time.Since(tStart)
+
+			if err != nil {
+				log.Fatalf("Unable to execute query %v\n", err)
+			}
+			<-guard
+			count += 1
+			times = append(times, tFinish.Seconds()) // Convert to seconds and append on array
+		}(record[0], record[1], record[2])
+	}
+	wg.Wait()
+
+	// Sort the times.
+	sort.Float64s(times)
+
+	// Friendly messages
+	fmt.Println("Nice. All queries executed...\n")
+	fmt.Println("Now, show the statistics...\n")
+
+	// Show the total of queries
+	fmt.Printf("Total queries: %v\n", count)
+	time.Sleep(1 * time.Second)
+
+	// Calculate the sum of times.
+	sumQueries := 0.0
+	for _, s := range times {
+		sumQueries += s
+	}
+	// Print total time
+	fmt.Printf("Total time (Seconds): %v\n", sumQueries)
+	time.Sleep(1 * time.Second)
+
+	// Print the minimum time in Seconds
+	fmt.Printf("Minimum time (Seconds): %v\n", times[0])
+	time.Sleep(1 * time.Second)
+
+	// Print the maximum time in Seconds
+	fmt.Printf("Maximum time (Seconds): %v\n", times[len(times)-1])
+	time.Sleep(1 * time.Second)
+
+	// Calculate mean time and print
+	total := 0.0
+	for _, v := range times {
+		total += v
+	}
+	fmt.Printf("Mean time (Seconds): %v\n", total/float64(len(times)))
+	time.Sleep(1 * time.Second)
+
+	// Calculate Median and print
+	if len(times)%2 == 0 {
+		fmt.Printf("Median time (Seconds): %v\n", times[len(times)/2])
+	} else {
+		fmt.Printf("Median time (Seconds): %v\n", (times[(len(times)/2)-1]+times[len(times)/2])/2)
+	}
+
+}
+
 // startCmd represents the start command.
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "A command to start benchmarking",
 	Long:  `A command to start benchmarking in TimescaleDB.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		// Connect to DB
-		ctx := context.Background()
-		connStr := os.Getenv("DB_CONN_URI")
-		dbpool, err := pgxpool.Connect(ctx, connStr)
-		if err != nil {
-			log.Fatalf("Unable to connect to database: %v\n", err)
-		}
-		defer dbpool.Close()
-
-		// Receive the csv file
-		fileName, _ := cmd.Flags().GetString("file")
-
-		// Check if file is valid
-		fExt := filepath.Ext(fileName)
-		if fExt != ".csv" {
-			log.Fatalf("Invalid file extension: %v\n", fExt)
-		}
-
-		// Open file
-		f, err := os.Open(fileName)
-		if err != nil {
-			log.Fatalf("Unable to open file: %v\n", err)
-		}
-
-		// Close file
-		defer f.Close()
-
-		r := csv.NewReader(f)
-
-		// Skip first line
-		if _, err := r.Read(); err != nil {
-			log.Fatalf("Unable to read file: %v\n", err)
-		}
-
-		var wg sync.WaitGroup
-		maxGoroutines := 10
-		guard := make(chan struct{}, maxGoroutines)
-
-		// Execute queries on Database
-		fmt.Println("Starting queries on DB. Awaiting...")
-		for {
-			record, err := r.Read()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				log.Fatal(err)
-			}
-
-			wg.Add(1)
-			guard <- struct{}{}
-			go func(hostname, startTime, endTime string) {
-				defer wg.Done()
-
-				conn, err := dbpool.Acquire(ctx)
-				if err != nil {
-					log.Fatalf("Unable to acquire connection: %v\n", err)
-				}
-				defer conn.Release()
-
-				queryCpuUsage := fmt.Sprintf(`
-				SELECT 
-					time_bucket('1 min', ts) as time,  
-					max(usage) as max_usage, 
-					min(usage) as min_usage 
-				FROM 
-					cpu_usage
-				WHERE 
-					host = '%s' AND 
-					ts BETWEEN '%s'::timestamp AND 
-					'%s'::timestamp 
-				GROUP BY 
-					time;`, hostname, startTime, endTime)
-
-				_, err = conn.Query(ctx, queryCpuUsage)
-				if err != nil {
-					log.Fatalf("Unable to execute query %v\n", err)
-				}
-				<-guard
-			}(record[0], record[1], record[2])
-		}
-		wg.Wait()
-
-		fmt.Println("Show the statistics...")
-
-		// Run query to show in terminal
-		conn, err := dbpool.Acquire(ctx)
-		if err != nil {
-			log.Fatalf("Unable to acquire connection: %v\n", err)
-		}
-		defer conn.Release()
-
-		const queryStmts = `
-		SELECT 
-    		query, 
-    		calls, 
-    		( total_exec_time / 1000 ) as total,
-    		( min_exec_time / 1000) as min_time,
-    		( max_exec_time / 1000) as max_time,
-    		( mean_exec_time / 1000 ) as avg_time,
-    		(((min_exec_time/1000) + (max_exec_time/1000)) / 2) as median
-		FROM
-    		pg_stat_statements
-		WHERE
-    		query ilike '%cpu_usage%';
-		`
-		rows, err := conn.Query(ctx, queryStmts)
-		if err != nil {
-			log.Fatalf("Unable to acquire connection: %v\n", err)
-		}
-		defer rows.Close()
-
-		type queryResult struct {
-			Query   string
-			Calls   int
-			Total   float64
-			minTime float64
-			avgTime float64
-			maxTime float64
-			median  float64
-		}
-
-		var queryResults []queryResult
-		for rows.Next() {
-			var qr queryResult
-			err = rows.Scan(&qr.Query, &qr.Calls, &qr.Total, &qr.minTime, &qr.avgTime, &qr.maxTime, &qr.median)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Unable to scan %v\n", err)
-				os.Exit(1)
-			}
-			queryResults = append(queryResults, qr)
-			fmt.Printf("Query: %v\n", qr.Query)
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Calls: %v\n", qr.Calls)
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Total time (Seconds): %v\n", qr.Total)
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Minimum Time (Seconds): %v\n", qr.minTime)
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Maximum Time (Seconds): %v\n", qr.maxTime)
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Average Time (Seconds): %v\n", qr.avgTime)
-			time.Sleep(1 * time.Second)
-			fmt.Printf("Median Time (Seconds): %v\n", qr.median)
-			time.Sleep(1 * time.Second)
-		}
-
-		if rows.Err() != nil {
-			fmt.Fprintf(os.Stderr, "rows Error: %v\n", rows.Err())
-			os.Exit(1)
-		}
-
-	},
+	Run:   runBenchmarking,
 }
 
 func init() {
