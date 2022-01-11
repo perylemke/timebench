@@ -21,9 +21,9 @@ clean:
 
 # Database commands
 migrate:
+	@sleep 1
 	@PGPASSWORD=password psql -U postgres -h localhost < db/migrations/cpu_usage.sql
 	@PGPASSWORD=password psql -U postgres -h localhost -d homework -c "\COPY cpu_usage FROM db/migrations/cpu_usage.csv CSV HEADER"
-	@PGPASSWORD=password psql -U postgres -h localhost -d homework -c "SELECT pg_stat_statements_reset();"
 
 database:
 	@PGPASSWORD=password psql -U postgres -h localhost -d homework
